@@ -1,21 +1,23 @@
-use snake::Board;
+use snake::{Game, GameState, Input};
+use std::io;
+
+fn get_input() -> Option<Input> {
+    // Some(Input::LEFT)
+    let mut buffer = String::new();
+    io::stdin()
+        .read_line(&mut buffer)
+        .expect("couldn't get line");
+    Input::from_key(buffer.trim_end())
+}
 
 fn main() {
-    let mut foo = 1usize;
-    println!("{}", foo);
-
-    foo -= 1;
-    println!("{}", foo);
-
-    let opt = foo.wrapping_sub(1);
-    println!("{:#?}", opt);
-
-
-    // let b = Board::create(10, 10);
-    // println!("{}", b);
-    // println!("{}", b.get((0,1)));
-    // let hi: u8 = 0b0;
-    // println!("{} {}", hi, !hi);
-    // let hid: u8 = 0b1;
-    // println!("{} {}", hid, !hid);
+    let mut game = Game::start(10, 10);
+    while game.state == GameState::RUNNING {
+        print!("{}", game);
+        if let Some(input) = get_input() {
+            game.cur_input = input
+        }
+        game.tick();
+    }
+    println!("{:?}", game.state)
 }

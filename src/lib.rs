@@ -1,10 +1,13 @@
-use std::fmt;
+use rand::{thread_rng, Rng};
+use std::collections::HashSet;
+use std::{fmt, ops::Add};
 
 const WALL_STR: &str = "█";
 const SNAKE_STR: &str = "●";
-const FOOD_STR: &str = "⋆";
+const FOOD_STR: &str = "*";
 const AIR_STR: &str = " ";
 
+#[derive(Clone)]
 pub enum Tile {
     SNAKE,
     FOOD,
@@ -22,51 +25,7 @@ impl fmt::Display for Tile {
     }
 }
 
-pub struct Board {
-    tiles: Vec<Vec<Tile>>,
-}
-
-impl fmt::Display for Board {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        //  (0,2) (1,2) (2,2)
-        //  (0,1) (1,1) (2,1)
-        //  (0,0) (1,0) (2,0)
-        // outer vec is column
-        let height = self.tiles[0].len();
-        write!(f, "{}\n", WALL_STR.repeat(height + 2))?;
-        for col_idx in 0..self.tiles.len() {
-            write!(f, "{}", WALL_STR)?;
-            for row_idx in 0..height {
-                write!(f, "{}", self.tiles[col_idx][row_idx])?;
-            }
-            write!(f, "{}\n", WALL_STR)?;
-        }
-        write!(f, "{}\n", WALL_STR.repeat(height + 2))?;
-        Ok(())
-    }
-}
-
-impl Board {
-    pub fn from_game(game: &Game) -> Board {
-        let mut board = Board { tiles: Vec::new() };
-        for y in 0..game.height {
-            let mut col = Vec::new();
-            for x in 0..game.width {
-                col.push(Tile::AIR)
-            }
-            board.tiles.push(col);
-        }
-        for snake_part in &game.snake {
-            board.tiles[snake_part.0][snake_part.1] = Tile::SNAKE;
-        }
-        if let Some(food) = game.food {
-            board.tiles[food.0][food.1] = Tile::FOOD;
-        }
-        board
-    }
-}
-
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Input {
     UP,
     DOWN,
@@ -75,6 +34,16 @@ pub enum Input {
 }
 
 impl Input {
+    pub fn from_key(s: &str) -> Option<Input> {
+        match s {
+            "w" => Some(Input::UP),
+            "a" => Some(Input::LEFT),
+            "s" => Some(Input::DOWN),
+            "d" => Some(Input::RIGHT),
+            _ => None,
+        }
+    }
+
     fn rev(&self) -> Input {
         match self {
             Input::DOWN => Input::UP,
@@ -84,85 +53,177 @@ impl Input {
         }
     }
 
-    fn offset(&self) -> (i8, i8) {
+    fn offset(&self) -> Coord {
         match self {
-            Input::DOWN => (0, -1),
-            Input::UP => (0, 1),
-            Input::LEFT => (-1, 0),
-            Input::RIGHT => (1, 0),
-        }
-    }
-
-    fn offset_xy(&self, xy: (usize, usize), max_xy: (usize, usize)) -> Option<(usize, usize)> {
-        let (x_offset, y_offset) = self.offset();
-        let x_opt = x_offset.checked_add(xy.0.try_into().unwrap());
-        let y_opt = x_offset.checked_add(xy.1.try_into().unwrap());
-        if x_opt.is_none() || y_opt.is_none() {
-            return None;
-        } else {
-            let x = x_opt.unwrap() as usize;
-            let y = y_opt.unwrap() as usize;
-            let foo = 0..5;
-            if !(0..max_xy.0).contains(&x) || !(0..max_xy.1).contains(&y) {
-                return None;
-            }
-            return Some((x, y));
+            Input::DOWN => Coord { x: 0, y: 1 },
+            Input::UP => Coord { x: 0, y: -1 },
+            Input::LEFT => Coord { x: -1, y: 0 },
+            Input::RIGHT => Coord { x: 1, y: 0 },
         }
     }
 }
 
-#[derive(PartialEq)]
-enum GameState {
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Coord {
+    x: isize, // these must be larger than the types of the height/width of the board and must be signed
+    y: isize,
+}
+
+impl Add for Coord {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+
+impl Coord {
+    fn move_by(&self, input: &Input) -> Coord {
+        let offset = input.offset();
+        self.clone() + offset
+    }
+}
+
+impl fmt::Display for Coord {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)?;
+        Ok(())
+    }
+}
+
+
+#[derive(PartialEq, Debug)]
+pub enum GameState {
     RUNNING,
     DEAD,
     WON,
 }
 
 pub struct Game {
-    // board: Board,
-    snake: Vec<(usize, usize)>,
-    food: Option<(usize, usize)>,
-    width: usize,
-    height: usize,
-    state: GameState,
-    // last_input: Input,
+    snake: Vec<Coord>,
+    food: Option<Coord>, // food may not be present if board is completely filled with snake
+    width: u8,
+    height: u8,
+    pub state: GameState,
+    pub cur_input: Input,
 }
 
-// use std::{sync::Mutex, collections::HashMap};
-// use once_cell::sync::Lazy;
-// use rand::prelude::*;
-
-// static RNG: Lazy<ThreadRng> = Lazy::new(|| {
-//     thread_rng()
-// });
-
 impl Game {
-    pub fn start(height: usize, width: usize) {
+    pub fn start(height: u8, width: u8) -> Game {
         if height < 2 || width < 2 {
             panic!("Board too small. Must have minimum dimension of 2.")
         }
+        let mut game = Game {
+            snake: vec![Coord { x: 0, y: 0 }],
+            food: None,
+            width,
+            height,
+            state: GameState::RUNNING,
+            cur_input: Input::DOWN,
+        };
+        game.place_food();
+        game
     }
 
-    pub fn tick(&self, input: Input) -> GameState {
-        let old_head = self.snake[0];
-        let mut new_head_opt = input.offset_xy(old_head, (self.width, self.height));
-        match new_head_opt {
-            None => return GameState::DEAD,
-            Some(new_head) => {}
+    fn coord_is_in_bounds(&self, coord: &Coord) -> bool {
+        coord.x >= 0 && coord.x < self.width.into() && coord.y >= 0 && coord.y < self.height.into()
+    }
+
+    fn get_head(&self) -> &Coord {
+        &self.snake[0]
+    }
+
+    fn coord_to_index(&self, coord: &Coord) -> usize {
+        let index = isize::from(self.width) * coord.x + coord.y;
+        index
+            .try_into()
+            .unwrap_or_else(|i| panic!("{i}: {index} is not an index"))
+    }
+
+    fn place_food(&mut self) -> () {
+        let mut free_coords = HashSet::new();
+        for y in 0..isize::from(self.height) {
+            for x in 0..isize::from(self.width) {
+                free_coords.insert(Coord { x, y });
+            }
+        }
+        for snake_part in &self.snake {
+            free_coords.remove(&snake_part);
         }
 
-        // if turning back on self, rever direction
-        // HH
-        // if self.last_input == input.rev() {
-        // turning back on itself not allowed
-        // input = input.rev();
-        // }
-        // match input {
-        //     Input::DOWN => n
-        // }
+        if free_coords.len() == 0 {
+            self.food = None;
+            return;
+        }
+
+        let free_cords = free_coords.into_iter().collect::<Vec<Coord>>();
+        let food_coord = &free_cords[thread_rng().gen_range(0..free_cords.len())];
+        self.food = Some(food_coord.clone())
     }
 
-    fn board(&self) -> Board {
-        Board::from_game(self)
+    pub fn get_new_head(&self) -> Coord {
+        let new_head = self.get_head().move_by(&self.cur_input);
+        if self.snake.len() >= 2 && self.snake[1] == new_head {
+            return self.snake[0].move_by(&self.cur_input.rev());
+        }
+        new_head
+    }
+
+    pub fn tick(&mut self) -> () {
+        let new_head = self.get_new_head();
+        if self.snake.contains(&new_head) {
+            self.state = GameState::DEAD;
+            return;
+        }
+        self.snake.insert(0, new_head);
+        // println!("Snake head at {}, in bounds?: {}", self.get_head(), self.coord_is_in_bounds(self.get_head()));
+        if !self.coord_is_in_bounds(self.get_head()) {
+            self.state = GameState::DEAD;
+            return;
+        }
+        let got_food = match &self.food {
+            Some(food) if self.get_head() == food => {
+                self.place_food();
+                if self.food.is_none() {
+                    // tried to place food, but no spots available, meaning all the board is a snake: you win
+                    self.state = GameState::WON;
+                    return;
+                }
+                true
+            }
+            _ => false,
+        };
+        if !got_food {
+            self.snake.pop();
+        }
+    }
+}
+
+impl fmt::Display for Game {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut tiles = vec![Tile::AIR; usize::from(self.width * self.width)];
+        for snake_part in &self.snake {
+            let index = self.coord_to_index(&snake_part);
+            tiles[index] = Tile::SNAKE;
+        }
+        if let Some(food) = &self.food {
+            let index = self.coord_to_index(&food);
+            tiles[index] = Tile::FOOD;
+        }
+
+        write!(f, "{}\n", WALL_STR.repeat(usize::from(self.width) + 2))?;
+        for y in 0..isize::from(self.height) {
+            write!(f, "{}", WALL_STR)?;
+            for x in 0..isize::from(self.width) {
+                let index = self.coord_to_index(&Coord { x, y });
+                write!(f, "{}", tiles[index])?;
+            }
+            write!(f, "{}\n", WALL_STR)?;
+        }
+        write!(f, "{}\n", WALL_STR.repeat(usize::from(self.width) + 2))?;
+        Ok(())
     }
 }
