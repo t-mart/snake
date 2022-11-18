@@ -1,8 +1,8 @@
-use snake::{Game, GameState, Input};
+use core::time;
+use snake::{Game, GameState, Input, InteractiveGame};
 use std::io;
 
 fn get_input() -> Option<Input> {
-    // Some(Input::LEFT)
     let mut buffer = String::new();
     io::stdin()
         .read_line(&mut buffer)
@@ -11,13 +11,14 @@ fn get_input() -> Option<Input> {
 }
 
 fn main() {
-    let mut game = Game::start(10, 10);
-    while game.state == GameState::RUNNING {
-        print!("{}", game);
-        if let Some(input) = get_input() {
-            game.cur_input = input
-        }
-        game.tick();
-    }
-    println!("{:?}", game.state)
+    // let mut game = Game::create(10, 40);
+    // while game.state == GameState::RUNNING {
+    //     print!("{}", game);
+    //     if let Some(input) = get_input() {
+    //         game.cur_input = input
+    //     }
+    //     game.tick();
+    // }
+    // println!("{:?}", game.state)
+    InteractiveGame::play(10, 10, time::Duration::from_millis(500))
 }

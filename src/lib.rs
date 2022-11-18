@@ -1,5 +1,9 @@
+use core::time;
+use crossterm::event::{poll, read, Event, KeyCode, KeyEvent};
 use rand::{thread_rng, Rng};
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::{fmt, ops::Add};
 
 const WALL_STR: &str = "█";
@@ -94,7 +98,6 @@ impl fmt::Display for Coord {
     }
 }
 
-
 #[derive(PartialEq, Debug)]
 pub enum GameState {
     RUNNING,
@@ -112,7 +115,7 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn start(height: u8, width: u8) -> Game {
+    pub fn create(height: u8, width: u8) -> Game {
         if height < 2 || width < 2 {
             panic!("Board too small. Must have minimum dimension of 2.")
         }
@@ -136,11 +139,12 @@ impl Game {
         &self.snake[0]
     }
 
-    fn coord_to_index(&self, coord: &Coord) -> usize {
-        let index = isize::from(self.width) * coord.x + coord.y;
-        index
-            .try_into()
-            .unwrap_or_else(|i| panic!("{i}: {index} is not an index"))
+    pub fn get_new_head(&self) -> Coord {
+        let new_head = self.get_head().move_by(&self.cur_input);
+        if self.snake.len() >= 2 && self.snake[1] == new_head {
+            return self.snake[0].move_by(&self.cur_input.rev());
+        }
+        new_head
     }
 
     fn place_food(&mut self) -> () {
@@ -164,14 +168,6 @@ impl Game {
         self.food = Some(food_coord.clone())
     }
 
-    pub fn get_new_head(&self) -> Coord {
-        let new_head = self.get_head().move_by(&self.cur_input);
-        if self.snake.len() >= 2 && self.snake[1] == new_head {
-            return self.snake[0].move_by(&self.cur_input.rev());
-        }
-        new_head
-    }
-
     pub fn tick(&mut self) -> () {
         let new_head = self.get_new_head();
         if self.snake.contains(&new_head) {
@@ -179,7 +175,6 @@ impl Game {
             return;
         }
         self.snake.insert(0, new_head);
-        // println!("Snake head at {}, in bounds?: {}", self.get_head(), self.coord_is_in_bounds(self.get_head()));
         if !self.coord_is_in_bounds(self.get_head()) {
             self.state = GameState::DEAD;
             return;
@@ -204,26 +199,104 @@ impl Game {
 
 impl fmt::Display for Game {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut tiles = vec![Tile::AIR; usize::from(self.width * self.width)];
+        let mut tiles = vec![];
+        for _ in 0..self.height {
+            tiles.push(vec![Tile::AIR; self.width.into()])
+        }
+
+        let mut update_coord_tile = |coord: &Coord, tile: Tile| -> () {
+            let x = usize::try_from(coord.x).unwrap();
+            let y = usize::try_from(coord.y).unwrap();
+            tiles[y][x] = tile
+        };
+
         for snake_part in &self.snake {
-            let index = self.coord_to_index(&snake_part);
-            tiles[index] = Tile::SNAKE;
+            update_coord_tile(snake_part, Tile::SNAKE);
         }
         if let Some(food) = &self.food {
-            let index = self.coord_to_index(&food);
-            tiles[index] = Tile::FOOD;
+            update_coord_tile(food, Tile::FOOD);
         }
 
         write!(f, "{}\n", WALL_STR.repeat(usize::from(self.width) + 2))?;
-        for y in 0..isize::from(self.height) {
+        for y in 0..usize::from(self.height) {
             write!(f, "{}", WALL_STR)?;
-            for x in 0..isize::from(self.width) {
-                let index = self.coord_to_index(&Coord { x, y });
-                write!(f, "{}", tiles[index])?;
+            for x in 0..usize::from(self.width) {
+                write!(f, "{}", tiles[y][x])?;
             }
             write!(f, "{}\n", WALL_STR)?;
         }
         write!(f, "{}\n", WALL_STR.repeat(usize::from(self.width) + 2))?;
         Ok(())
+    }
+}
+
+pub struct InteractiveGame {
+    game_mut: Arc<Mutex<Game>>,
+    tick_wait: time::Duration,
+}
+impl InteractiveGame {
+    pub fn play(height: u8, width: u8, tick_wait: time::Duration) -> () {
+        let ig = InteractiveGame {
+            game_mut: Arc::new(Mutex::new(Game::create(height, width))),
+            tick_wait,
+        };
+
+        let ticker_mut = Arc::clone(&ig.game_mut);
+        let ticker = thread::spawn(move || {
+            // - print the board
+            // - wait
+            // - tick
+            loop {
+                {
+                    let game = ticker_mut.lock().unwrap();
+                    print!("{}", game);
+                }
+                thread::sleep(ig.tick_wait);
+                {
+                    let mut game = ticker_mut.lock().unwrap();
+                    game.tick();
+                    if game.state != GameState::RUNNING {
+                        println!("{:?}", game.state);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let input_handler_mut = Arc::clone(&ig.game_mut);
+        let input_handler = thread::spawn(move || loop {
+            if poll(ig.tick_wait).unwrap() {
+                let event = read().unwrap();
+                let input = match event {
+                    Event::Key(KeyEvent {
+                        modifiers: _,
+                        code: KeyCode::Char('w'),
+                    }) => Some(Input::UP),
+                    Event::Key(KeyEvent {
+                        modifiers: _,
+                        code: KeyCode::Char('a'),
+                    }) => Some(Input::LEFT),
+                    Event::Key(KeyEvent {
+                        modifiers: _,
+                        code: KeyCode::Char('s'),
+                    }) => Some(Input::DOWN),
+                    Event::Key(KeyEvent {
+                        modifiers: _,
+                        code: KeyCode::Char('d'),
+                    }) => Some(Input::RIGHT),
+                    _ => None,
+                };
+                if let Some(i) = input {
+                    let mut game = input_handler_mut.lock().unwrap();
+                    game.cur_input = i;
+                }
+                // println!("Event::{:?}\r", event);
+            } else if input_handler_mut.lock().unwrap().state != GameState::RUNNING {
+                break;
+            }
+        });
+
+        ticker.join().unwrap();
+        input_handler.join().unwrap();
     }
 }

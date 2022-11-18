@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 once_cell = "1.16.0"
 rand = "0.8.4"
+crossterm = "0.23"
