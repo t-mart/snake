@@ -1,14 +1,7 @@
 use core::time;
-use snake::{Game, GameState, Input, InteractiveGame};
-use std::io;
+use snake::InteractiveGame;
 
-fn get_input() -> Option<Input> {
-    let mut buffer = String::new();
-    io::stdin()
-        .read_line(&mut buffer)
-        .expect("couldn't get line");
-    Input::from_key(buffer.trim_end())
-}
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 fn main() {
     // let mut game = Game::create(10, 40);
@@ -20,5 +13,8 @@ fn main() {
     //     game.tick();
     // }
     // println!("{:?}", game.state)
-    InteractiveGame::play(10, 10, time::Duration::from_millis(500))
+
+    enable_raw_mode().unwrap();
+    InteractiveGame::play(10, 10, time::Duration::from_millis(200));
+    disable_raw_mode().unwrap();
 }

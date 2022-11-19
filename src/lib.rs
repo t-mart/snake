@@ -1,9 +1,20 @@
 use core::time;
-use crossterm::event::{poll, read, Event, KeyCode, KeyEvent};
+use crossterm::{
+    cursor::{self, Hide},
+    event::{
+        poll, read, Event,
+        KeyCode::{Char, Down, Left, Right, Up},
+        KeyEvent,
+    },
+    style::{Print, Stylize},
+    terminal::{Clear, ClearType},
+    QueueableCommand,
+};
 use rand::{thread_rng, Rng};
-use std::collections::HashSet;
+use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::{collections::HashSet, io::Stdout};
 use std::{fmt, ops::Add};
 
 const WALL_STR: &str = "█";
@@ -16,14 +27,16 @@ pub enum Tile {
     SNAKE,
     FOOD,
     AIR,
+    WALL,
 }
 
 impl fmt::Display for Tile {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let tile_str = match self {
-            Tile::SNAKE => SNAKE_STR,
-            Tile::FOOD => FOOD_STR,
-            Tile::AIR => AIR_STR,
+            Tile::SNAKE => SNAKE_STR.green(),
+            Tile::FOOD => FOOD_STR.red(),
+            Tile::AIR => AIR_STR.stylize(),
+            Tile::WALL => WALL_STR.white(),
         };
         write!(f, "{}", tile_str)
     }
@@ -98,6 +111,35 @@ impl fmt::Display for Coord {
     }
 }
 
+pub enum TermUpdateType {
+    Clear,
+    Snake,
+    Food,
+}
+
+pub struct TermUpdate {
+    type_: TermUpdateType,
+    coord: Coord,
+}
+
+impl TermUpdate {
+    pub fn queue(&self, stdout: &mut Stdout) -> crossterm::Result<()> {
+        let tile = match self.type_ {
+            TermUpdateType::Clear => Tile::AIR,
+            TermUpdateType::Snake => Tile::SNAKE,
+            TermUpdateType::Food => Tile::FOOD,
+        };
+        // offset by (+1, +1) for walls
+        stdout
+            .queue(cursor::MoveTo(
+                u16::try_from(self.coord.x).unwrap() + 1,
+                u16::try_from(self.coord.y).unwrap() + 1,
+            ))?
+            .queue(Print(tile))?;
+        Ok(())
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub enum GameState {
     RUNNING,
@@ -168,32 +210,101 @@ impl Game {
         self.food = Some(food_coord.clone())
     }
 
-    pub fn tick(&mut self) -> () {
+    pub fn tick(&mut self) -> Vec<TermUpdate> {
+        let mut term_updates = Vec::new();
+
         let new_head = self.get_new_head();
-        if self.snake.contains(&new_head) {
+
+        if self.snake[..self.snake.len() - 1].contains(&new_head) {
+            // don't check the last snake part. we want to be able to move into that spot and not die
             self.state = GameState::DEAD;
-            return;
+            return term_updates;
         }
-        self.snake.insert(0, new_head);
+
+        self.snake.insert(0, new_head.clone());
+        term_updates.push(TermUpdate {
+            type_: TermUpdateType::Snake,
+            coord: new_head.clone(),
+        });
+
         if !self.coord_is_in_bounds(self.get_head()) {
             self.state = GameState::DEAD;
-            return;
+            return term_updates;
         }
+
         let got_food = match &self.food {
             Some(food) if self.get_head() == food => {
+                // term_updates.push(TermUpdate {
+                //     type_: TermUpdateType::Clear,
+                //     coord: food.clone(),
+                // });
                 self.place_food();
-                if self.food.is_none() {
-                    // tried to place food, but no spots available, meaning all the board is a snake: you win
-                    self.state = GameState::WON;
-                    return;
+                match &self.food {
+                    Some(coord) => term_updates.push(TermUpdate {
+                        type_: TermUpdateType::Food,
+                        coord: coord.clone(),
+                    }),
+                    None => {
+                        // if food is None, that means we couldn't place any food because board is full
+                        // in other words, you've won?
+                        self.state = GameState::WON;
+                        return term_updates;
+                    }
                 }
                 true
             }
             _ => false,
         };
+
         if !got_food {
+            term_updates.push(TermUpdate {
+                type_: TermUpdateType::Clear,
+                coord: self.snake.last().unwrap().clone(),
+            });
             self.snake.pop();
         }
+
+        term_updates
+    }
+
+    /// Draw the initial board to stdout. No clearing is performed.
+    pub fn draw_initial(&self) -> crossterm::Result<()> {
+        let mut stdout = stdout();
+
+        stdout.queue(Clear(ClearType::All))?;
+
+        // draw the walls
+        for y in 0..self.height + 2 {
+            for x in 0..self.width + 2 {
+                if y == 0 || y == self.height + 1 || x == 0 || x == self.width + 1 {
+                    stdout
+                        .queue(cursor::MoveTo(x.into(), y.into()))?
+                        .queue(Print(Tile::WALL))?;
+                }
+            }
+        }
+
+        // draw the snake, offsetting by (+1, +1) for walls
+        for coord in &self.snake {
+            stdout
+                .queue(cursor::MoveTo(
+                    u16::try_from(coord.x).unwrap() + 1,
+                    u16::try_from(coord.y).unwrap() + 1,
+                ))?
+                .queue(Print(Tile::SNAKE))?;
+        }
+
+        // draw the food, offsetting by (+1, +1) for walls
+        if let Some(food) = &self.food {
+            stdout
+                .queue(cursor::MoveTo(
+                    u16::try_from(food.x).unwrap() + 1,
+                    u16::try_from(food.y).unwrap() + 1,
+                ))?
+                .queue(Print(Tile::FOOD))?;
+        }
+
+        Ok(())
     }
 }
 
@@ -246,15 +357,26 @@ impl InteractiveGame {
             // - print the board
             // - wait
             // - tick
+            let mut stdout = stdout();
+            stdout.queue(Hide).unwrap();
+            ticker_mut.lock().unwrap().draw_initial().unwrap();
+            stdout.flush().unwrap();
+
+            let mut term_updates: Vec<TermUpdate> = Vec::new();
             loop {
                 {
-                    let game = ticker_mut.lock().unwrap();
-                    print!("{}", game);
+                    // let game = ticker_mut.lock().unwrap();
+                    for term_update in &term_updates {
+                        term_update.queue(&mut stdout).unwrap();
+                    }
+                    stdout.flush().unwrap();
                 }
                 thread::sleep(ig.tick_wait);
                 {
                     let mut game = ticker_mut.lock().unwrap();
-                    game.tick();
+
+                    term_updates = game.tick();
+
                     if game.state != GameState::RUNNING {
                         println!("{:?}", game.state);
                         break;
@@ -268,29 +390,19 @@ impl InteractiveGame {
             if poll(ig.tick_wait).unwrap() {
                 let event = read().unwrap();
                 let input = match event {
-                    Event::Key(KeyEvent {
-                        modifiers: _,
-                        code: KeyCode::Char('w'),
-                    }) => Some(Input::UP),
-                    Event::Key(KeyEvent {
-                        modifiers: _,
-                        code: KeyCode::Char('a'),
-                    }) => Some(Input::LEFT),
-                    Event::Key(KeyEvent {
-                        modifiers: _,
-                        code: KeyCode::Char('s'),
-                    }) => Some(Input::DOWN),
-                    Event::Key(KeyEvent {
-                        modifiers: _,
-                        code: KeyCode::Char('d'),
-                    }) => Some(Input::RIGHT),
+                    Event::Key(KeyEvent { modifiers: _, code }) => match code {
+                        Up | Char('w') | Char('W') => Some(Input::UP),
+                        Left | Char('a') | Char('A') => Some(Input::LEFT),
+                        Down | Char('s') | Char('S') => Some(Input::DOWN),
+                        Right | Char('d') | Char('D') => Some(Input::RIGHT),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 if let Some(i) = input {
                     let mut game = input_handler_mut.lock().unwrap();
                     game.cur_input = i;
                 }
-                // println!("Event::{:?}\r", event);
             } else if input_handler_mut.lock().unwrap().state != GameState::RUNNING {
                 break;
             }
